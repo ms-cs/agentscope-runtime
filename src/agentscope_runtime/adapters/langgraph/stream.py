@@ -39,10 +39,13 @@ async def adapt_langgraph_message_stream(
     # Track tool usage
     tool_started = False
     tool_call_chunk_msgs = []
+    has_tool_call_chunk = False
 
     async for msg, last in source_stream:
+        print("tool_started: ", tool_started)
         # Determine message role
         if isinstance(msg, HumanMessage):
+            print("HumanMessage")
             role = "user"
             content = msg.content if hasattr(msg, "content") else None
             if msg_id != getattr(msg, "id"):
@@ -61,10 +64,14 @@ async def adapt_langgraph_message_stream(
                 yield text_delta_content
                 yield message.completed()
         elif isinstance(msg, AIMessage):
+            print("AIMessage")
             role = "assistant"
             has_tool_call_chunk = (
                 True if getattr(msg, "tool_call_chunks") else False
             )
+            if has_tool_call_chunk:
+                print("has_tool_call_chunk")
+                print(msg)
             is_last_chunk = (
                 True if getattr(msg, "chunk_position") == "last" else False
             )
@@ -110,7 +117,10 @@ async def adapt_langgraph_message_stream(
                     tool_call_chunk_msgs.append(msg)
                 else:
                     # normal message
+                    print("normal message")
+                    print("herehere_msg: ", msg)
                     content = msg.content if hasattr(msg, "content") else None
+                    print("herehere_content: ", content)
                     if msg_id != getattr(msg, "id"):
                         index = None
                         message = Message(type=MessageType.MESSAGE, role=role)
@@ -134,6 +144,7 @@ async def adapt_langgraph_message_stream(
                         # completed_content = message.content[index]
                         # if completed_content.text:
                         #     yield completed_content.completed()
+                        print("last Completed")
                         yield message.completed()
         elif isinstance(msg, SystemMessage):
             role = "system"
@@ -177,6 +188,7 @@ async def adapt_langgraph_message_stream(
             plugin_output_message.content = [data_content]
             yield plugin_output_message.completed()
         else:
+            print("other message")
             role = "assistant"
             content = msg.content if hasattr(msg, "content") else None
             if msg_id != getattr(msg, "id"):

@@ -3,71 +3,31 @@
 
 import json
 import multiprocessing
-import os
 import time
-from typing import TypedDict
 
 import aiohttp
 import pytest
+import os
+
+from langchain.agents import create_agent
 from langchain.tools import tool
-from langchain_core.messages import HumanMessage
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, START, StateGraph
-from langgraph.graph.message import add_messages
-from typing_extensions import Annotated
 
 from agentscope_runtime.engine import AgentApp
 from agentscope_runtime.engine.schemas.agent_schemas import AgentRequest
+from dataclasses import dataclass
 
-PORT = 8091  # Use different port from other tests
-
-
-class AgentState(TypedDict):
-    messages: Annotated[list, add_messages]
+from langchain.chat_models import init_chat_model
+from langgraph.graph import StateGraph, START
 
 
-def add_time(state: AgentState):
-    new_message = HumanMessage(content="Today is August 21, 2025")
-    return {"messages": [new_message]}
-
+PORT = 8090  # Use different port from other tests
 
 @tool
 def get_weather(location: str, date: str) -> str:
     """Get the weather for a location and date."""
     print(f"Getting weather for {location} on {date}...")
     return f"The weather in {location} is sunny with a temperature of 25°C."
-
-
-tools = [get_weather]
-# Choose the LLM that will drive the agent
-llm = ChatOpenAI(
-    model="qwen-plus",
-    api_key=os.environ.get("DASHSCOPE_API_KEY"),
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-)
-
-prompt = """You are a proactive assistant. """
-
-
-def build_graph():
-    llm = ChatOpenAI(
-        model="qwen-plus",
-        api_key=os.environ.get("DASHSCOPE_API_KEY"),
-        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    )
-
-    def call_model(state: AgentState):
-        """Call the LLM to generate a joke about a topic"""
-        model_response = llm.invoke(state["messages"])
-        return {"messages": model_response}
-
-    workflow = StateGraph(AgentState)
-    workflow.add_node("call_model", call_model)
-    workflow.add_edge(START, "call_model")
-    graph = workflow.compile()
-    return graph
-
 
 def run_langgraph_app():
     """Start LangGraph AgentApp with streaming output enabled."""
@@ -78,7 +38,7 @@ def run_langgraph_app():
 
     @agent_app.init
     async def init_func(self):
-        self.short_term_mem = InMemorySaver()
+        pass
 
     @agent_app.shutdown
     async def shutdown_func(self):
@@ -91,24 +51,44 @@ def run_langgraph_app():
         request: AgentRequest = None,
         **kwargs,
     ):
-        # Extract session information
         session_id = request.session_id
         user_id = request.user_id
-        print("Session ID:", session_id)
-        print("User ID:", user_id)
+        print(f"Received query from user {user_id} with session {session_id}")
+        tools = [get_weather]
+        # Choose the LLM that will drive the agent
+        llm = ChatOpenAI(
+            model="Qwen3-30B-A3B-Instruct-2507",
+            api_key="Y2VhOWM1ZmZmZjgzMTJmN2NjNzNiZWE5MzRmYzEzNDlhZjBmNmNlMA==",
+            base_url="http://1095312831785714.cn-shanghai.pai-eas.aliyuncs.com/api/predict/wzy_debug2/v1",
+            streaming=True,
+        )
+        # llm = ChatTongyi(
+        #     model="qwen-plus",
+        #     streaming=True,
+        #     api_key=os.getenv("DASHSCOPE_API_KEY"),
+        # )
 
-        graph = build_graph()
+        prompt = """You are a proactive research assistant. """
 
-        async for chunk, meta_data in graph.astream(
-            input={"messages": msgs},
-            stream_mode="messages",
-            config={"configurable": {"thread_id": session_id}},
+        agent = create_agent(
+            llm,
+            tools,
+            system_prompt=prompt,
+            name="LangGraphAgent",
+        )
+        async for chunk, meta_data in agent.astream(
+                input={"messages": msgs, "session_id": session_id, "user_id": user_id},
+                stream_mode="messages",
+                config={"configurable": {"thread_id": session_id}},
         ):
+            print("herehere chunk: ", chunk)
+            os.system("pip list | grep fast")
             is_last_chunk = (
-                True
-                if getattr(chunk, "chunk_position", "") == "last"
-                else False
+                True if getattr(chunk, "chunk_position", "") == "last" else False
             )
+            if getattr(chunk, "response_metadata", "") and "finish_reason" in chunk.response_metadata:
+                is_last_chunk = True
+                print("herehere is last_chunk: ", is_last_chunk)
             yield chunk, is_last_chunk
 
     agent_app.run(host="127.0.0.1", port=PORT)
@@ -137,6 +117,52 @@ def start_langgraph_app():
     proc.terminate()
     proc.join()
 
+@pytest.mark.asyncio
+async def test_langgraph_stream_async(start_langgraph_app):
+    print("=="*20)
+    print("test_langgraph_stream_async")
+    @dataclass
+    class MyState:
+        topic: str
+        joke: str = ""
+
+    model = ChatOpenAI(
+        model="Qwen3-30B-A3B-Instruct-2507",
+        api_key="Y2VhOWM1ZmZmZjgzMTJmN2NjNzNiZWE5MzRmYzEzNDlhZjBmNmNlMA==",
+        base_url="http://1095312831785714.cn-shanghai.pai-eas.aliyuncs.com/api/predict/wzy_debug2/v1",
+        streaming=True,
+    )
+    found_response = False
+
+    def call_model(state: MyState):
+        """Call the LLM to generate a joke about a topic"""
+        # Note that message events are emitted even when the LLM is run using .invoke rather than .stream
+        model_response = model.invoke(
+            [
+                {"role": "user", "content": f"Generate a joke about {state.topic}"}
+            ]
+        )
+        return {"joke": model_response.content}
+
+    graph = (
+        StateGraph(MyState)
+        .add_node(call_model)
+        .add_edge(START, "call_model")
+        .compile()
+    )
+
+    for message_chunk, metadata in graph.stream(
+            {"topic": "ice cream"},
+            stream_mode="messages",
+    ):
+        print("message_chunk: ", message_chunk)
+        if message_chunk.content:
+            print(message_chunk.content)
+
+    print("==" * 20)
+    assert (
+        found_response
+    ), "by design"
 
 @pytest.mark.asyncio
 async def test_langgraph_process_endpoint_stream_async(start_langgraph_app):
@@ -149,7 +175,7 @@ async def test_langgraph_process_endpoint_stream_async(start_langgraph_app):
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "What is the capital of France?"},
+                    {"type": "text", "text": "Hello, What is the capital of France?"},
                 ],
             },
         ],
@@ -163,30 +189,37 @@ async def test_langgraph_process_endpoint_stream_async(start_langgraph_app):
             )
 
             found_response = False
-            chunks = []
 
             async for chunk, _ in resp.content.iter_chunks():
                 if not chunk:
                     continue
-                chunks.append(chunk.decode("utf-8").strip())
+                # chunks.append(chunk.decode("utf-8").strip())
+                line = chunk.decode("utf-8").strip()
+                print("herehere line: ", line)
+                # SSE lines start with "data:"
+                if line.startswith("data:"):
+                    data_str = line[len("data:") :].strip()
+                    if data_str == "[DONE]":
+                        break
 
-            line = chunks[-1]
-            # SSE lines start with "data:"
-            if line.startswith("data:"):
-                data_str = line[len("data:") :].strip()
-                event = json.loads(data_str)
-
-                # Check if this event has "output" from the assistant
-                if "output" in event:
                     try:
-                        text_content = event["output"][-1]["content"][0][
-                            "text"
-                        ].lower()
-                        if text_content:
-                            found_response = True
-                    except Exception:
-                        # Structure may differ; ignore
-                        pass
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        # Ignore non‑JSON keepalive messages or partial lines
+                        continue
+
+                    # Check if this event has "output" from the assistant
+                    if "output" in event:
+                        try:
+                            text_content = event["output"][0]["content"][0][
+                                "text"
+                            ].lower()
+                            print("text_content: ", text_content)
+                            if "paris" in text_content:
+                                found_response = True
+                        except Exception:
+                            # Structure may differ; ignore
+                            pass
 
             # Final assertion — we must have seen "paris" in at least one event
             assert (
