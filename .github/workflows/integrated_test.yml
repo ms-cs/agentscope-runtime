@@ -71,7 +71,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
         run: |
-          coverage run -m pytest tests/integrated/test_langgraph_agent_app.py
+          coverage run -m pytest tests/integrated
 
       - name: Generate coverage report
         run: |
